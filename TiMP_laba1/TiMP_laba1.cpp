@@ -12,6 +12,8 @@
 #include <process.h>
 #include <conio.h>
 
+using namespace std;
+
 void log(const char*, const char*);
 void log(const char*, const char*, const char*);
 void logInfo(const char*);
@@ -20,10 +22,12 @@ void logStart();
 void logErr(const char*);
 bool compareWithMask(LPWSTR, LPWSTR);
 void refreshDirectory(LPWSTR);
+void deleteIncorrectFile(LPCTSTR);
+void renameIncorrectFile(LPCTSTR, LPCTSTR);
 
 DWORD dwWaitStatus;
 HANDLE hChangeHandler;
-LPCWSTR wDirectoryName = L"C:/Test";
+LPCWSTR lpDirectoryName = L"C:/Test";
 bool bCloseThread = false;
 const char** arr_S_FileMasks;
 LPWSTR* arr_W_FileMasks;
@@ -46,6 +50,8 @@ int main() {
 	SID_IDENTIFIER_AUTHORITY SIDAuthNT = SECURITY_NT_AUTHORITY;
 
 	//Reading input data and filling array of masks to look for
+	
+	ifstream fInput("C:/Test/template.tbl");
 
 	arr_S_FileMasks = (const char**)malloc(sizeof(int) * nCountOfMasks);
 	arr_S_FileMasks[0] = "C:/Test/Test.txt";
@@ -125,7 +131,7 @@ int main() {
 
 	// Handler of directory to check it for file creating or deleting.
 
-	hChangeHandler = CreateFile(wDirectoryName,
+	hChangeHandler = CreateFile(lpDirectoryName,
 		GENERIC_READ,
 		FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
 		NULL,
@@ -198,11 +204,12 @@ unsigned __stdcall WatchingThread(void* pArguments)
 {
 	logInfo("Watching thread started.");
 	DWORD nBufferLength = 60 * 1024;
-	BYTE* lpBuffer = (BYTE*)malloc(sizeof(BYTE)*nBufferLength);
+	BYTE* lpBuffer = (BYTE*)malloc(sizeof(BYTE) * nBufferLength);
 	OVERLAPPED ovl = {};
 	DWORD returnedBytes = 0;
 	ovl.hEvent = CreateEvent(0, FALSE, FALSE, 0);
-
+	int nLastAction = 0;
+	LPWSTR lpOldFileName = (LPWSTR)L" ";
 
 
 	while (TRUE)
@@ -225,8 +232,32 @@ unsigned __stdcall WatchingThread(void* pArguments)
 			{
 				PFILE_NOTIFY_INFORMATION pNotify = PFILE_NOTIFY_INFORMATION(lpBuffer + seek);
 				seek += pNotify->NextEntryOffset;
-				if (pNotify->Action == FILE_ACTION_RENAMED_NEW_NAME)
-					refreshDirectory(pNotify->FileName);
+				if (pNotify->Action == FILE_ACTION_RENAMED_OLD_NAME || pNotify->Action == FILE_ACTION_ADDED){
+					nLastAction = pNotify->Action;
+					lpOldFileName = pNotify->FileName;
+				}	
+				else if (pNotify->Action == FILE_ACTION_RENAMED_NEW_NAME) {
+					for (int i = 0; i < nCountOfMasks; i++) {
+						if (compareWithMask(pNotify->FileName, arr_W_FileMasks[i])) {
+							logInfo("This file name is prohibited. Try using another one.");
+							switch (nLastAction) {
+							case FILE_ACTION_ADDED: {
+								LPWSTR lpFullFileName = (LPWSTR)lpDirectoryName;
+								deleteIncorrectFile(wcscat(lpFullFileName, pNotify->FileName));
+								break;
+							}
+
+							case FILE_ACTION_RENAMED_OLD_NAME: {
+								LPWSTR lpOldFullFileName = (LPWSTR)lpDirectoryName, lpNewFullFileName = (LPWSTR)lpDirectoryName;
+								renameIncorrectFile(wcscat(lpOldFullFileName, lpOldFileName), wcscat(lpNewFullFileName, pNotify->FileName));
+								break;
+							}
+							}
+							break;
+						}
+					}
+					nLastAction = 0;
+				}
 				if (pNotify->NextEntryOffset == 0) {
 					break;
 				}
@@ -234,19 +265,13 @@ unsigned __stdcall WatchingThread(void* pArguments)
 		}
 	}
 
-_endthreadex(0);
-return 0;
+	_endthreadex(0);
+	return 0;
 }
 
 void refreshDirectory(LPWSTR lpFileName) {
 	//If file name matches with one of the masks we return
 	//this file it's previous name.
-	for (int i = 0; i < nCountOfMasks; i++) {
-		if (compareWithMask(lpFileName, arr_W_FileMasks[i])) {
-			logInfo("This file name is prohibited. Try using another one.");
-			return;
-		}
-	}
 }
 
 void logStart(const char* arg_1, const char* arg_2) {
@@ -300,7 +325,7 @@ void log(const char* level, const char* arg_1, const char* arg_2) {
 bool compareWithMask(LPWSTR sLineToCheck, LPWSTR sPattern)
 {
 	LPWSTR sReturnInLine = 0, sReturnInPattern = 0;
-	while (1)
+	while (TRUE)
 		if (*sPattern == L'*') {
 			sReturnInLine = sLineToCheck;
 			sReturnInPattern = ++sPattern;
@@ -318,4 +343,14 @@ bool compareWithMask(LPWSTR sLineToCheck, LPWSTR sPattern)
 		}
 		else
 			return false;
+}
+
+void deleteIncorrectFile(LPCTSTR lpFileName) {
+	DeleteFile(lpFileName);
+	return;
+}
+
+void renameIncorrectFile(LPCTSTR lpOldFileName, LPCTSTR lpIncorrectFileName) {
+	MoveFile(lpIncorrectFileName, lpOldFileName);
+	return;
 }
