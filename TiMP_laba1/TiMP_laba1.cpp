@@ -1,4 +1,5 @@
 ﻿#define _CRT_SECURE_NO_WARNINGS
+#define CATCH_CONFIG_MAIN
 
 #include <windows.h>
 #include <stdlib.h>
@@ -11,6 +12,8 @@
 #include <fstream>
 #include <process.h>
 #include <conio.h>
+#include <vector>
+#include <string>
 
 using namespace std;
 
@@ -20,56 +23,76 @@ void logInfo(const char*);
 void logStart(const char*, const char*);
 void logStart();
 void logErr(const char*);
-bool compareWithMask(LPWSTR, LPWSTR);
 void refreshDirectory(LPWSTR);
 void deleteIncorrectFile(LPCTSTR);
 void renameIncorrectFile(LPCTSTR, LPCTSTR);
 
-DWORD dwWaitStatus;
-HANDLE hChangeHandler;
+
+
 LPCWSTR lpDirectoryName = L"C:/Test";
 bool bCloseThread = false;
-const char** arr_S_FileMasks;
-LPWSTR* arr_W_FileMasks;
+vector <string> vsFileMasks;
+LPWSTR* arrwFileMasks;
 OVERLAPPED ovl = { 0 };
-int nCountOfMasks = 1;
+const int nMaxBuffSize = 100;
 
-unsigned __stdcall WatchingThread(void*);
+void WatchingThread(void*);
 
 int main() {
 
 	logStart();
+	//MoveFile(L"C:/Test/result.txt", L"C:/Test/logs.txt");
 
 	DWORD dwRes;
 	PSID pOldEveryoneSID = NULL, pNewEveryoneSID = NULL, pAdminSID = NULL;
 	PACL pNewDACL = NULL;
-	PACL pOldDACL = NULL;
+	PACL* arrpOldDACL = (PACL*)malloc(sizeof(PACL) * vsFileMasks.size());
 	PSECURITY_DESCRIPTOR pSD = NULL;
-	EXPLICIT_ACCESS ea[2];
-	SID_IDENTIFIER_AUTHORITY SIDAuthWorld = SECURITY_WORLD_SID_AUTHORITY;
-	SID_IDENTIFIER_AUTHORITY SIDAuthNT = SECURITY_NT_AUTHORITY;
+	EXPLICIT_ACCESS ea[2];//Structure that sets rights for given SID
+	SID_IDENTIFIER_AUTHORITY SIDAuthWorld = SECURITY_WORLD_SID_AUTHORITY; //SID with everyone group rights
+	SID_IDENTIFIER_AUTHORITY SIDAuthNT = SECURITY_NT_AUTHORITY;//SID with Admin group rights
 
 	//Reading input data and filling array of masks to look for
-	
+
 	ifstream fInput("C:/Test/template.tbl");
 
-	arr_S_FileMasks = (const char**)malloc(sizeof(int) * nCountOfMasks);
-	arr_S_FileMasks[0] = "C:/Test/Test.txt";
-	arr_W_FileMasks = (LPWSTR*)malloc(sizeof(LPWSTR) * nCountOfMasks);
-	arr_W_FileMasks[0] = (LPWSTR)malloc(sizeof(wchar_t) * strlen(arr_S_FileMasks[0]));
-	mbsrtowcs(arr_W_FileMasks[0], &(arr_S_FileMasks[0]), strlen(arr_S_FileMasks[0]) + 1, NULL);
-
-	logInfo("Read input data.");
-
-	//Getting old security information to store it
-
-	ULONG lErr = GetNamedSecurityInfo(arr_W_FileMasks[0], SE_FILE_OBJECT, DACL_SECURITY_INFORMATION,
-		&pOldEveryoneSID, NULL, &pOldDACL, NULL, &pSD);
-	if (lErr != ERROR_SUCCESS) {
-		logErr("Could not get files' security info.");
+	if (!fInput.is_open()) {
+		logErr("Could not open file with templates.");
 		return 1;
 	}
 
+	logInfo("Opened file with templates");
+	//Skiping first line with encrypted password
+	string sNextLine = "";
+	getline(fInput, sNextLine);
+
+	while (!fInput.eof()) {
+		fInput >> sNextLine;
+		string sFullName = "C:/Test/";
+		sFullName += sNextLine;
+		vsFileMasks.push_back(sFullName.data()); //Reading templates from template.tbl
+	}
+
+	fInput.close();
+
+	logInfo("File with templates closed");
+	arrwFileMasks = (LPWSTR*)malloc(sizeof(LPWSTR) * vsFileMasks.size());
+
+	for (unsigned int i = 0; i < vsFileMasks.size(); i++) {
+		const char* sNextMask = vsFileMasks[i].data();
+		arrwFileMasks[i] = (LPWSTR)malloc(sizeof(wchar_t) * strlen(sNextMask));
+		mbsrtowcs(arrwFileMasks[i], &(sNextMask), strlen(sNextMask) + 1, NULL); //Transform common string into wide character string
+	}
+
+	logInfo("Successfully read and transformed templates.");
+
+	//Getting old security information to store it
+
+	for (unsigned int i = 0; i < vsFileMasks.size(); i++) {
+		arrpOldDACL[i] = NULL;
+		ULONG lErr = GetNamedSecurityInfo(arrwFileMasks[i], SE_FILE_OBJECT, DACL_SECURITY_INFORMATION,
+			&pOldEveryoneSID, NULL, &arrpOldDACL[i], NULL, &pSD);
+	}
 	logInfo("Got files' current security information.");
 
 	// Create a well-known SID for the Everyone group.
@@ -120,30 +143,12 @@ int main() {
 	}
 
 	//Setting new security attributes
-	dwRes = SetNamedSecurityInfo(arr_W_FileMasks[0], SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, pNewEveryoneSID, NULL, pNewDACL, NULL);
-	if (ERROR_SUCCESS != dwRes)
-	{
-		logErr("Could not update files security info.");
-		return 1;
+	for (unsigned int i = 0; i < vsFileMasks.size(); i++) {
+		dwRes = SetNamedSecurityInfo(arrwFileMasks[i], SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, pNewEveryoneSID, NULL, pNewDACL, NULL);
 	}
-
 	logInfo("Set new security information for given files.");
 
 	// Handler of directory to check it for file creating or deleting.
-
-	hChangeHandler = CreateFile(lpDirectoryName,
-		GENERIC_READ,
-		FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-		NULL,
-		OPEN_EXISTING,
-		FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED,
-		NULL
-	);
-
-	if (hChangeHandler == INVALID_HANDLE_VALUE) {
-		logErr("Could not create directory change handler.");
-		ExitProcess(GetLastError());
-	}
 
 
 	// Handler is set and now we are waiting for changes to appear
@@ -151,8 +156,7 @@ int main() {
 	logInfo("Created directory change handler.");
 
 	//Creating second thread to watch directory
-	unsigned int dwWatchingTreadID;
-	HANDLE hWatchingThread = (HANDLE)_beginthreadex(NULL, 0, &WatchingThread, NULL, 0, &dwWatchingTreadID);
+	HANDLE hWatchingThread = (HANDLE)_beginthread(WatchingThread, 1024*2048*sizeof(BYTE) , NULL);
 
 	//To exit program user should type password
 	Sleep(1000);
@@ -175,11 +179,8 @@ int main() {
 	logInfo("Watching thread terminated.");
 
 	//Returning old security attributes to all files
-	dwRes = SetNamedSecurityInfo(arr_W_FileMasks[0], SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, pOldEveryoneSID, NULL, pOldDACL, NULL);
-	if (ERROR_SUCCESS != dwRes)
-	{
-		logErr("Could not set back file's security info.");
-		return 1;
+	for (unsigned int i = 0; i < vsFileMasks.size(); i++) {
+		dwRes = SetNamedSecurityInfo(arrwFileMasks[i], SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, pOldEveryoneSID, NULL, arrpOldDACL[i], NULL);
 	}
 
 	logInfo("Set back files' security info.");
@@ -188,90 +189,139 @@ int main() {
 	//Cleaning up all SIDs and descriptors
 	if (pOldEveryoneSID)
 		FreeSid(pOldEveryoneSID);
+	logInfo("Cleaned Everyone SID.");
 	if (pAdminSID)
 		FreeSid(pAdminSID);
+	logInfo("Cleaned Admin SID.");
 	if (pNewDACL)
 		LocalFree(pNewDACL);
-	if (pOldDACL)
-		LocalFree(pOldDACL);
+	logInfo("Cleaned pointer to new DACL.");
+	for (unsigned int i = 0; i < vsFileMasks.size(); i++)
+		if (arrpOldDACL[i])
+			LocalFree(arrpOldDACL[i]);
+	logInfo("Cleadned pointers to old DACLs.");
 	if (pSD)
 		LocalFree(pSD);
+	logInfo("Cleaned security descriptor.");
 
 	return 0;
 }
 
-unsigned __stdcall WatchingThread(void* pArguments)
+void WatchingThread(void* pArguments)
 {
 	logInfo("Watching thread started.");
-	DWORD nBufferLength = 60 * 1024;
-	BYTE* lpBuffer = (BYTE*)malloc(sizeof(BYTE) * nBufferLength);
-	OVERLAPPED ovl = {};
-	DWORD returnedBytes = 0;
-	ovl.hEvent = CreateEvent(0, FALSE, FALSE, 0);
-	int nLastAction = 0;
-	LPWSTR lpOldFileName = (LPWSTR)L" ";
+	//Important data to read directory changes
+	int nLastAction = 0, nNameLength = 0;
+	bool bRenameFile = FALSE, bDeleteFile = FALSE;
 
+	LPWSTR lpFullFileName = new wchar_t[nMaxBuffSize]; //For deleting/renaming case
+	LPWSTR lpOldFullFileName = new wchar_t[nMaxBuffSize]; // For renaming case
+	LPWSTR lpOldFileName = new wchar_t[nMaxBuffSize]; // For renaming case
+	//MoveFile(L"C:/Test/logs.txt", L"C:/Test/result.txt");
+	DWORD nBufferLength = 60 * 1024;
+	BYTE* lpBuffer = new BYTE[nBufferLength];
+	OVERLAPPED ovl = {}; //Structure for async operations
+	ovl.hEvent = CreateEvent(0, FALSE, FALSE, 0); //Event for OVERLAPPED
 
 	while (TRUE)
 	{
 		//Waiting for signal.
 		if (bCloseThread)
 			break;
-		ReadDirectoryChangesW(hChangeHandler, lpBuffer, nBufferLength, TRUE,
-			FILE_NOTIFY_CHANGE_FILE_NAME, &returnedBytes, &ovl, 0);
 
-		dwWaitStatus = WaitForSingleObject(ovl.hEvent, INFINITE);
+		if (bRenameFile) {
+			MoveFile(lpFullFileName, lpOldFullFileName);
+			bRenameFile = FALSE;
+		}
+		if (bDeleteFile) {
+			DeleteFile(lpFullFileName);
+			bDeleteFile = FALSE;
+		}
+
+		HANDLE hChangeHandler = CreateFile(lpDirectoryName,
+			GENERIC_READ,
+			FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+			NULL,
+			OPEN_EXISTING,
+			FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED,
+			NULL
+		);
+
+		if (hChangeHandler == INVALID_HANDLE_VALUE) {
+			logErr("Could not create directory change handler.");
+			ExitProcess(GetLastError());
+		}
+
+		DWORD returnedBytes = 0;
+		ReadDirectoryChangesW(hChangeHandler, lpBuffer, nBufferLength, TRUE,
+			FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME,
+			&returnedBytes, &ovl, 0);
+
+		DWORD dwWaitStatus = WaitForSingleObject(ovl.hEvent, INFINITE); //Waiting for changes to happen
 
 		if (dwWaitStatus == WAIT_OBJECT_0) {
-
-			// File was created or deleted.
-			// Refresh directory and continue waiting.
-
 			DWORD seek = 0;
 			while (seek < nBufferLength)
 			{
+				//Getting info about changes
 				PFILE_NOTIFY_INFORMATION pNotify = PFILE_NOTIFY_INFORMATION(lpBuffer + seek);
 				seek += pNotify->NextEntryOffset;
-				if (pNotify->Action == FILE_ACTION_RENAMED_OLD_NAME || pNotify->Action == FILE_ACTION_ADDED){
-					nLastAction = pNotify->Action;
-					lpOldFileName = pNotify->FileName;
-				}	
-				else if (pNotify->Action == FILE_ACTION_RENAMED_NEW_NAME) {
-					for (int i = 0; i < nCountOfMasks; i++) {
-						if (compareWithMask(pNotify->FileName, arr_W_FileMasks[i])) {
-							logInfo("This file name is prohibited. Try using another one.");
-							switch (nLastAction) {
-							case FILE_ACTION_ADDED: {
-								LPWSTR lpFullFileName = (LPWSTR)lpDirectoryName;
-								deleteIncorrectFile(wcscat(lpFullFileName, pNotify->FileName));
-								break;
-							}
+				int nAction = pNotify->Action;
 
-							case FILE_ACTION_RENAMED_OLD_NAME: {
-								LPWSTR lpOldFullFileName = (LPWSTR)lpDirectoryName, lpNewFullFileName = (LPWSTR)lpDirectoryName;
-								renameIncorrectFile(wcscat(lpOldFullFileName, lpOldFileName), wcscat(lpNewFullFileName, pNotify->FileName));
-								break;
-							}
-							}
+				//If file was created or renamed we should check if it's name is correct
+				if (nAction == 1) {
+					pNotify = PFILE_NOTIFY_INFORMATION(lpBuffer + seek);
+
+					lpOldFileName = pNotify->FileName;
+					nNameLength = pNotify->FileNameLength / 2;
+					wcscpy(lpFullFileName, lpDirectoryName);
+					wcscat(lpFullFileName, L"/");
+					wcscat(lpFullFileName, (LPCWSTR)lpOldFileName);
+					lpFullFileName[wcslen(lpDirectoryName) + nNameLength + 1] = 0;
+					for (unsigned int i = 0; i < vsFileMasks.size(); i++)
+						if (wcscmp(lpFullFileName, arrwFileMasks[i]) == 0) {
+							bDeleteFile = TRUE;
 							break;
 						}
-					}
-					nLastAction = 0;
 				}
+
+				if (nAction == 4) {
+					lpOldFileName = pNotify->FileName;
+					wcscpy(lpOldFullFileName, lpDirectoryName);
+					wcscat(lpOldFullFileName, L"/");
+					wcscat(lpOldFullFileName, (LPCWSTR)lpOldFileName);
+
+					pNotify = PFILE_NOTIFY_INFORMATION(lpBuffer + seek);
+
+					lpOldFileName = pNotify->FileName;
+					nNameLength = pNotify->FileNameLength / 2;
+					wcscpy(lpFullFileName, lpDirectoryName);
+					wcscat(lpFullFileName, L"/");
+					wcscat(lpFullFileName, (LPCWSTR)lpOldFileName);
+					lpFullFileName[wcslen(lpDirectoryName) + nNameLength + 1] = 0;
+					for(unsigned int i = 0; i < vsFileMasks.size(); i++)
+						if (wcscmp(lpFullFileName, arrwFileMasks[i]) == 0) {
+							bRenameFile = TRUE;
+							break;
+						}
+				}
+				//If there are no more notes about current changes we begin waiting for the next list of changes
 				if (pNotify->NextEntryOffset == 0) {
 					break;
 				}
 			}
 		}
+		CloseHandle(hChangeHandler);
 	}
 
+	CloseHandle(ovl.hEvent);
+	delete[] lpBuffer;
+	delete lpFullFileName;
+	delete lpOldFullFileName;
+	delete lpOldFileName;
+	//Exiting second thread
 	_endthreadex(0);
-	return 0;
-}
-
-void refreshDirectory(LPWSTR lpFileName) {
-	//If file name matches with one of the masks we return
-	//this file it's previous name.
+	return;
 }
 
 void logStart(const char* arg_1, const char* arg_2) {
@@ -320,37 +370,4 @@ void log(const char* level, const char* arg_1, const char* arg_2) {
 		st.wMilliseconds);
 	printf(level);
 	printf("%s %s\n", arg_1, arg_2);
-}
-
-bool compareWithMask(LPWSTR sLineToCheck, LPWSTR sPattern)
-{
-	LPWSTR sReturnInLine = 0, sReturnInPattern = 0;
-	while (TRUE)
-		if (*sPattern == L'*') {
-			sReturnInLine = sLineToCheck;
-			sReturnInPattern = ++sPattern;
-		}
-		else if (!*sLineToCheck) {
-			return !*sPattern;
-		}
-		else if (*sLineToCheck == *sPattern || *sPattern == L'?') {
-			++sLineToCheck;
-			++sPattern;
-		}
-		else if (sReturnInLine) {
-			sLineToCheck = ++sReturnInLine;
-			sPattern = sReturnInPattern;
-		}
-		else
-			return false;
-}
-
-void deleteIncorrectFile(LPCTSTR lpFileName) {
-	DeleteFile(lpFileName);
-	return;
-}
-
-void renameIncorrectFile(LPCTSTR lpOldFileName, LPCTSTR lpIncorrectFileName) {
-	MoveFile(lpIncorrectFileName, lpOldFileName);
-	return;
 }
