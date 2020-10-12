@@ -3,6 +3,9 @@
 #include <fstream>
 #include <windows.h>
 #include <stdio.h>
+#include <iostream>
+#include <string>
+#include <vector>
 
 using namespace std;
 
@@ -25,6 +28,7 @@ int main()
 
 	if (!fInput.is_open()) {
 		//If data file does not exist we need to create one
+		logInfo("No data file located. Creating a new one.");
 		fInput.close();
 		HANDLE hInput = CreateFile(L"C:/Test/Data.txt",
 			GENERIC_ALL,
@@ -55,9 +59,49 @@ int main()
 		logInfo("To continue using this software you can buy full version on our website.");
 	}
 	else {
-		char sNameBuffer[nMaxNameLen];
+		nUsagesLeft--;
+		vector<string> vsExistingNames;
+		vector<int> vnUsagesByNames;
+		int nNumBuffer;
+		string sNameBuffer;
+
+		while (!fInput.eof()) {
+			fInput >> sNameBuffer;
+			fInput >> nNumBuffer;
+			vsExistingNames.push_back(sNameBuffer);
+			vnUsagesByNames.push_back(nNumBuffer);
+		}
+
+		fInput.close();
+
 		logInfo("Hello. Please enter your name below to use this software.");
-		scanf("%s", sNameBuffer);
+		cin >> sNameBuffer;
+		for (unsigned int i = 0; i < vsExistingNames.size(); i++) {
+			if (sNameBuffer == vsExistingNames[i]) {
+				SYSTEMTIME st;
+
+				GetLocalTime(&st);
+				printf("%d-%02d-%02d %02d:%02d:%02d.%03d",
+					st.wYear,
+					st.wMonth,
+					st.wDay,
+					st.wHour,
+					st.wMinute,
+					st.wSecond,
+					st.wMilliseconds);
+				printf(" INFO ");
+				printf("Hello, you have used this program %d times before\n", vnUsagesByNames[i]);
+				vnUsagesByNames[i]++;
+				break;
+			}
+			if (i == vsExistingNames.size() - 1) {
+				logInfo("This is your first usage of this program.");
+				break;
+			}
+		}
+
+		ofstream fOutput("C:/Test/Data.txt");
+
 	}
 	logInfo("Exiting program.");
 	Sleep(10000);
@@ -65,7 +109,7 @@ int main()
 }
 
 void logStart(const char* arg_1, const char* arg_2) {
-	log(" INFO Starting programm with following arguments ", arg_1, arg_2);
+	log(" START Starting programm with following arguments ", arg_1, arg_2);
 }
 
 void logStart() {
